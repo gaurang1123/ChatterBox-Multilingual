@@ -306,6 +306,10 @@ class MTLTokenizer:
             txt = korean_normalize(txt)
         elif language_id == 'ru':
             txt = self.russian_stress_labeler(txt)
+        elif language_id == 'pl':
+            # Polish text normalization: ensure diacritic characters are preserved
+            import unicodedata
+            txt = unicodedata.normalize('NFC', txt)
         
         # Prepend language token
         if language_id:
