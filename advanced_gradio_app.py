@@ -2,13 +2,15 @@ import gradio as gr
 import torch
 import torchaudio as ta
 from src.chatterbox.mtl_tts import ChatterboxMultilingualTTS, SUPPORTED_LANGUAGES
+from src.chatterbox.vc import ChatterboxVC
 import tempfile
 import os
 import re
 
-# Initialize model
+# Initialize models
 device = "cpu"
-model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+tts_model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+vc_model = ChatterboxVC.from_pretrained(device)
 
 def generate_speech(text, language, reference_audio, exaggeration, cfg_weight, speed_factor, temperature):
     """Generate speech with advanced parameters"""
@@ -29,7 +31,7 @@ def generate_speech(text, language, reference_audio, exaggeration, cfg_weight, s
             kwargs["audio_prompt_path"] = reference_audio
         
         # Generate audio
-        wav = model.generate(text, **kwargs)
+        wav = tts_model.generate(text, **kwargs)
         
         # Apply speed control if needed
         if speed_factor != 1.0:
@@ -40,9 +42,9 @@ def generate_speech(text, language, reference_audio, exaggeration, cfg_weight, s
         
         # Save to temporary file
         output_path = tempfile.mktemp(suffix=".wav")
-        ta.save(output_path, wav, model.sr)
+        ta.save(output_path, wav, tts_model.sr)
         
-        duration = len(wav[0]) / model.sr
+        duration = len(wav[0]) / tts_model.sr
         lang_name = SUPPORTED_LANGUAGES[language]
         status = f"✅ Generated {duration:.1f}s of {lang_name} speech"
         if reference_audio:
@@ -111,7 +113,7 @@ def process_text_file(file, language, reference_audio, exaggeration, cfg_weight,
                 kwargs["audio_prompt_path"] = reference_audio
             
             # Generate audio for chunk
-            wav = model.generate(chunk, **kwargs)
+            wav = tts_model.generate(chunk, **kwargs)
             
             # Apply speed control
             if speed_factor != 1.0:
@@ -121,19 +123,43 @@ def process_text_file(file, language, reference_audio, exaggeration, cfg_weight,
                 wav = torch.tensor(wav_stretched).unsqueeze(0)
             
             audio_segments.append(wav[0])
-            total_duration += len(wav[0]) / model.sr
+            total_duration += len(wav[0]) / tts_model.sr
         
         # Concatenate all audio segments
         final_audio = torch.cat(audio_segments, dim=0).unsqueeze(0)
         
         # Save final audio
         output_path = tempfile.mktemp(suffix=".wav")
-        ta.save(output_path, final_audio, model.sr)
+        ta.save(output_path, final_audio, tts_model.sr)
         
         lang_name = SUPPORTED_LANGUAGES[language]
         status = f"✅ Processed {len(chunks)} chunks, {total_duration:.1f}s of {lang_name} speech"
         if reference_audio:
             status += " (with voice cloning)"
+        
+        return output_path, status
+        
+    except Exception as e:
+        return None, f"❌ Error: {str(e)}"
+
+def voice_conversion(input_audio, target_voice):
+    """Convert input audio to target voice"""
+    if input_audio is None:
+        return None, "Please upload input audio"
+    
+    if target_voice is None:
+        return None, "Please upload target voice audio"
+    
+    try:
+        # Generate voice conversion
+        wav = vc_model.generate(input_audio, target_voice_path=target_voice)
+        
+        # Save to temporary file
+        output_path = tempfile.mktemp(suffix=".wav")
+        ta.save(output_path, wav, vc_model.sr)
+        
+        duration = len(wav[0]) / vc_model.sr
+        status = f"✅ Voice converted successfully, {duration:.1f}s audio generated"
         
         return output_path, status
         
@@ -314,6 +340,46 @@ with gr.Blocks(title="Chatterbox Multilingual TTS") as demo:
                 fn=process_text_file,
                 inputs=[file_input, file_language_dropdown, file_reference_audio, file_exaggeration, file_cfg_weight, file_speed_factor, file_temperature, chunk_size],
                 outputs=[file_audio_output, file_status_output]
+            )
+        
+        with gr.TabItem("Voice Conversion"):
+            gr.Markdown("### Convert one voice to another")
+            gr.Markdown("Upload an input audio file and a target voice sample to convert the voice")
+            
+            with gr.Row():
+                with gr.Column():
+                    input_audio = gr.Audio(
+                        label="Input Audio",
+                        type="filepath",
+                        help="Upload the audio file you want to convert"
+                    )
+                    
+                    target_voice_audio = gr.Audio(
+                        label="Target Voice Sample",
+                        type="filepath", 
+                        help="Upload a sample of the target voice (10-30 seconds recommended)"
+                    )
+                    
+                    convert_btn = gr.Button("🔄 Convert Voice", variant="primary", size="lg")
+                
+                with gr.Column():
+                    gr.Markdown("### Tips for Voice Conversion")
+                    gr.Markdown("""
+                    - **Input Audio**: Any speech audio you want to convert
+                    - **Target Voice**: Clear, high-quality sample (10-30 seconds)
+                    - **Best Results**: Use clean audio without background noise
+                    - **Supported Formats**: WAV, MP3, FLAC
+                    """)
+            
+            with gr.Row():
+                vc_audio_output = gr.Audio(label="Converted Audio")
+                vc_status_output = gr.Textbox(label="Status", interactive=False)
+            
+            # Connect voice conversion function
+            convert_btn.click(
+                fn=voice_conversion,
+                inputs=[input_audio, target_voice_audio],
+                outputs=[vc_audio_output, vc_status_output]
             )
 
 if __name__ == "__main__":
